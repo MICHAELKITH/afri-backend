@@ -1,13 +1,15 @@
 package main
 
 import (
+	"log"
+	"os" // Added to read environment variables
+
 	"backend/database"
 	"backend/models"
 	"backend/routes"
-	"log"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors" // Import the official middleware
+	"github.com/gofiber/fiber/v2/middleware/cors"
 )
 
 func main() {
@@ -15,10 +17,11 @@ func main() {
 
 	log.Println("🚀 Starting Fiber server...")
 
-	// Connect to database
+	// 1. Connect to database
+	// Make sure your DB_URL is set in Railway Variables!
 	database.ConnectDB()
 
-	// Auto-migrate user model
+	// 2. Auto-migrate user model
 	if err := database.DB.
 		Set("gorm:skipconstraint", true).
 		AutoMigrate(&models.User{}); err != nil {
@@ -27,19 +30,26 @@ func main() {
 		log.Println("✅ Auto migration complete")
 	}
 
-	// ✅ CORRECTED CORS: Use the official middleware for security and reliability
+	// 3. CORS Configuration
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "http://localhost:5173, https://traders.kazini.africa", // Comma separated, NOT "||"
+		AllowOrigins:     "http://localhost:5173, https://traders.kazini.africa",
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
 		AllowCredentials: true,
 	}))
 
-	// Setup routes
+	// 4. Setup routes
 	routes.SetupRoutes(app)
 
-	// Start server
-	if err := app.Listen(":3000"); err != nil {
-		log.Fatalf("❌ Server failed: %v", err)
+	// 5. Dynamic Port (CRITICAL FOR RAILWAY)
+	// Railway assigns a random port; listening on a hardcoded :3000 will cause a crash.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3000" // Default for local development
+	}
+
+	log.Printf("📡 Server is listening on port %s", port)
+	if err := app.Listen(":" + port); err != nil {
+		log.Fatalf("❌ Server failed to start: %v", err)
 	}
 }
