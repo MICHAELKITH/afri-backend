@@ -40,7 +40,7 @@ func SignUp(c *fiber.Ctx) error {
 
 	// Create User with specific error handling
 	// Avoid inserting empty phone_number (unique index conflict) by only including it when provided
-	createData := map[string]interface{
+	createData := map[string]interface{}{
 		"first_name":     req.FirstName,
 		"last_name":      req.LastName,
 		"email":          req.Email,
@@ -75,7 +75,7 @@ func SignUp(c *fiber.Ctx) error {
 		"exp": time.Now().Add(24 * time.Hour).Unix(),
 		"iat": time.Now().Unix(),
 	}
-	
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(getJWTSecret())
 	if err != nil {

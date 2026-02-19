@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -12,30 +13,27 @@ import (
 var DB *gorm.DB
 
 func ConnectDB() {
-	// 1. Load .env for LOCAL development only
-	// We ignore the error because Railway provides variables via system env
-	_ = godotenv.Load()
+    // 1. Load .env only for local development
+    _ = godotenv.Load() 
 
-	// 2. Priority 1: Use the full DATABASE_URL (Railway's default)
-	dsn := os.Getenv("DATABASE_URL")
+    // 2. Try the single Railway-provided URL first
+    dsn := os.Getenv("DATABASE_URL")
 
-	// 3. Priority 2: Fallback to individual variables (Local dev default)
-	if dsn == "" {
-		log.Println("⚠️ DATABASE_URL not found, constructing DSN from individual variables...")
-		dsn = "host=" + os.Getenv("DB_HOST") +
-			" user=" + os.Getenv("DB_USER") +
-			" password=" + os.Getenv("DB_PASSWORD") +
-			" dbname=" + os.Getenv("DB_NAME") +
-			" port=" + os.Getenv("DB_PORT") +
-			" sslmode=disable"
-	}
+    // 3. Fallback to individual variables if DATABASE_URL is not found (local dev)
+    if dsn == "" {
+        dsn = fmt.Sprintf(
+            "host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
+            os.Getenv("DB_HOST"), os.Getenv("DB_USER"), 
+            os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_PORT"),
+        )
+    }
 
-	// 4. Connect to GORM
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		log.Fatalf("❌ Failed to connect to database: %v", err)
-	}
+    // 4. Connect via GORM
+    db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+    if err != nil {
+        log.Fatalf("❌ Database connection failed: %v", err)
+    }
 
-	DB = db
-	log.Println("✅ Database connected successfully")
+    DB = db
+    log.Println("✅ Database connected via GORM")
 }
