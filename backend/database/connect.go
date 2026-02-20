@@ -13,27 +13,30 @@ import (
 var DB *gorm.DB
 
 func ConnectDB() {
-    // 1. Load .env only for local development
     _ = godotenv.Load() 
 
-    // 2. Try the single Railway-provided URL first
     dsn := os.Getenv("DATABASE_URL")
 
-    // 3. Fallback to individual variables if DATABASE_URL is not found (local dev)
     if dsn == "" {
+        log.Println("⚠️ DATABASE_URL not found, using individual DB_* variables")
         dsn = fmt.Sprintf(
             "host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
             os.Getenv("DB_HOST"), os.Getenv("DB_USER"), 
             os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_PORT"),
         )
+    } else {
+        log.Println("🌐 Using DATABASE_URL for connection")
     }
 
-    // 4. Connect via GORM
+    // DEBUG: This will show you exactly what host it's trying to hit
+    // log.Printf("Attempting connection to: %s", dsn) 
+
     db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
     if err != nil {
+        // This is where your 'Connection Refused' error is currently coming from
         log.Fatalf("❌ Database connection failed: %v", err)
     }
 
     DB = db
-    log.Println("✅ Database connected via GORM")
+    log.Println("✅ Database connected successfully!")
 }
