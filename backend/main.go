@@ -43,7 +43,7 @@ app.Use(cors.New(cors.Config{
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "3000" // Default for local development
+		port = "8080" // Default for local development
 	}
 
 	log.Printf("📡 Server is listening on port %s", port)
