@@ -31,18 +31,16 @@ func main() {
 	}
 
 	// 3. CORS Configuration
-	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "http://localhost:5173, https://traders.kazini.africa",
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
-		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
-		AllowCredentials: true,
-	}))
+app.Use(cors.New(cors.Config{
+    AllowOrigins: "http://localhost:5173, https://traders.kazini.africa, https://afri-backend-production.up.railway.app",
+    AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+    AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
+    AllowCredentials: true,
+}))
 
 	// 4. Setup routes
 	routes.SetupRoutes(app)
 
-	// 5. Dynamic Port (CRITICAL FOR RAILWAY)
-	// Railway assigns a random port; listening on a hardcoded :3000 will cause a crash.
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "3000" // Default for local development
