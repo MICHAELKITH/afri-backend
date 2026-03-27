@@ -1,25 +1,32 @@
 package models
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // User represents a registered user
 type User struct {
 	gorm.Model // includes ID, CreatedAt, UpdatedAt, DeletedAt
 
-	FirstName     string `gorm:"not null" json:"first_name"`
-	LastName      string `gorm:"not null" json:"last_name"`
+	FirstName     string `gorm:"not null"        json:"first_name"`
+	LastName      string `gorm:"not null"        json:"last_name"`
 	Email         string `gorm:"uniqueIndex;not null" json:"email"`
-	PhoneNumber   string `gorm:"uniqueIndex" json:"phone_number"`
-	Country       string `gorm:"not null" json:"country"`
-	StudyLevel    string `gorm:"not null" json:"study_level"`
-	FieldOfStudy  string `gorm:"not null" json:"field_of_study"`
-	YearOfStudy   int    `json:"year_of_study"`
-	LearningGoals string `json:"learning_goals"`
-	// FIX: Changed from "-" to "password" so BodyParser can read it from Postman
-	Password      string `gorm:"not null" json:"password"` 
+	PhoneNumber   string `gorm:"uniqueIndex"     json:"phone_number"`
+	Country       string `gorm:"not null"        json:"country"`
+	StudyLevel    string `gorm:"not null"        json:"study_level"`
+	FieldOfStudy  string `gorm:"not null"        json:"field_of_study"`
+	YearOfStudy   int    `                       json:"year_of_study"`
+	LearningGoals string `                       json:"learning_goals"`
+	Password      string `gorm:"not null"        json:"password"`
+
+	// Password reset — populated only during forgot-password flow
+	PasswordResetToken   string     `gorm:"column:password_reset_token"   json:"-"`
+	PasswordResetExpires *time.Time `gorm:"column:password_reset_expires" json:"-"`
 }
 
-// Safe returns user data without the sensitive password field
+// Safe returns user data without sensitive fields
 func (u *User) Safe() map[string]interface{} {
 	return map[string]interface{}{
 		"id":             u.ID,
