@@ -4,8 +4,8 @@ import (
 	"backend/database"
 	"backend/models"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"math/big"
 	"net/smtp"
 	"os"
 	"strings"
@@ -19,6 +19,17 @@ import (
 // ─── Helper ───────────────────────────────────────────────────────────────────
 func getJWTSecret() []byte {
 	return []byte(os.Getenv("JWT_SECRET"))
+}
+
+// generateOTP returns a cryptographically secure 6-digit OTP string.
+func generateOTP() (string, error) {
+	max := big.NewInt(1_000_000)
+	n, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		return "", err
+	}
+	// Zero-pad to always be 6 digits
+	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
 // ─── SignUp ───────────────────────────────────────────────────────────────────
@@ -130,7 +141,8 @@ func Logout(c *fiber.Ctx) error {
 
 // ─── ForgotPassword ───────────────────────────────────────────────────────────
 // POST /api/forgot-password
-// Always returns 200 whether or not the email exists (prevents enumeration).
+// Generates a 6-digit OTP, stores it hashed, and emails it to the user.
+// Always returns 200 to prevent email enumeration.
 func ForgotPassword(c *fiber.Ctx) error {
 	var body struct {
 		Email string `json:"email"`
@@ -145,51 +157,49 @@ func ForgotPassword(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Email is required"})
 	}
 
-	// Look up user — if not found, still return 200 (no enumeration)
+	// Always return the same message — prevents email enumeration
+	genericMsg := fiber.Map{"message": "If that email is registered, you will receive a reset code shortly."}
+
 	var user models.User
 	if err := database.DB.Where("email = ?", body.Email).First(&user).Error; err != nil {
-		return c.Status(200).JSON(fiber.Map{
-			"message": "If that email is registered, you will receive a reset link shortly.",
-		})
+		return c.Status(200).JSON(genericMsg)
 	}
 
-	// Generate secure random token
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate reset token"})
+	// Generate 6-digit OTP
+	otp, err := generateOTP()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate OTP"})
 	}
-	resetToken := hex.EncodeToString(tokenBytes)
-	expiresAt  := time.Now().Add(1 * time.Hour)
 
-	// Save token + expiry to the user record
+	// Hash the OTP before storing (treat it like a password)
+	hashedOTP, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to secure OTP"})
+	}
+
+	expiresAt := time.Now().Add(10 * time.Minute)
+
 	if err := database.DB.Model(&user).Updates(map[string]interface{}{
-		"password_reset_token":   resetToken,
+		"password_reset_token":   string(hashedOTP),
 		"password_reset_expires": expiresAt,
 	}).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to save reset token"})
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to save OTP"})
 	}
 
-	// Build reset link using FRONTEND_URL from .env
-	frontendURL := os.Getenv("FRONTEND_URL")
-	if frontendURL == "" {
-		frontendURL = "http://localhost:5173"
-	}
-	resetLink := fmt.Sprintf("%s/reset-password?token=%s", frontendURL, resetToken)
+	// Send OTP email asynchronously
+	go sendOTPEmail(user.Email, user.FirstName, otp)
 
-	// Send email asynchronously so the response isn't delayed
-	go sendResetEmail(user.Email, user.FirstName, resetLink)
-
-	return c.Status(200).JSON(fiber.Map{
-		"message": "If that email is registered, you will receive a reset link shortly.",
-	})
+	return c.Status(200).JSON(genericMsg)
 }
 
 // ─── ResetPassword ────────────────────────────────────────────────────────────
 // POST /api/reset-password
-// Validates the token and sets a new password.
+// Body: { "email": "...", "otp": "123456", "password": "newpass" }
+// Validates the OTP and updates the password.
 func ResetPassword(c *fiber.Ctx) error {
 	var body struct {
-		Token    string `json:"token"`
+		Email    string `json:"email"`
+		OTP      string `json:"otp"`
 		Password string `json:"password"`
 	}
 
@@ -197,22 +207,30 @@ func ResetPassword(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
 
-	if strings.TrimSpace(body.Token) == "" || strings.TrimSpace(body.Password) == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "Token and new password are required"})
+	body.Email = strings.TrimSpace(strings.ToLower(body.Email))
+	body.OTP   = strings.TrimSpace(body.OTP)
+
+	if body.Email == "" || body.OTP == "" || body.Password == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Email, OTP, and new password are required"})
 	}
 
 	if len(body.Password) < 8 {
 		return c.Status(400).JSON(fiber.Map{"error": "Password must be at least 8 characters"})
 	}
 
-	// Find user with a valid (non-expired) token
+	// Find user with a non-expired OTP token
 	var user models.User
 	if err := database.DB.Where(
-		"password_reset_token = ? AND password_reset_expires > ?",
-		body.Token,
+		"email = ? AND password_reset_expires > ?",
+		body.Email,
 		time.Now(),
 	).First(&user).Error; err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Reset link is invalid or has expired"})
+		return c.Status(400).JSON(fiber.Map{"error": "OTP is invalid or has expired"})
+	}
+
+	// Verify OTP against the stored hash
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordResetToken), []byte(body.OTP)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Incorrect OTP. Please check your email and try again."})
 	}
 
 	// Hash the new password
@@ -221,9 +239,9 @@ func ResetPassword(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to secure password"})
 	}
 
-	// Update password and clear the token so it cannot be reused
+	// Update password and clear the OTP so it cannot be reused
 	if err := database.DB.Model(&user).Updates(map[string]interface{}{
-		"password":              string(hashed),
+		"password":               string(hashed),
 		"password_reset_token":   "",
 		"password_reset_expires": nil,
 	}).Error; err != nil {
@@ -233,19 +251,17 @@ func ResetPassword(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Password reset successfully. You can now log in."})
 }
 
-// ─── sendResetEmail ───────────────────────────────────────────────────────────
-// Called in a goroutine so it doesn't block the HTTP response.
-func sendResetEmail(toEmail, firstName, resetLink string) {
-	smtpHost := os.Getenv("SMTP_HOST")      // e.g. smtp.gmail.com
-	smtpPort := os.Getenv("SMTP_PORT")      // e.g. 587
-	smtpUser := os.Getenv("SMTP_USER")      // sender address
-	smtpPass := os.Getenv("SMTP_PASSWORD")  // Gmail App Password or SendGrid key
-	fromName := os.Getenv("SMTP_FROM_NAME") // e.g. AfCFTApreneurship Arena
+// ─── sendOTPEmail ─────────────────────────────────────────────────────────────
+func sendOTPEmail(toEmail, firstName, otp string) {
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort := os.Getenv("SMTP_PORT")
+	smtpUser := os.Getenv("SMTP_USER")
+	smtpPass := os.Getenv("SMTP_PASSWORD")
+	fromName := os.Getenv("SMTP_FROM_NAME")
 
 	if smtpHost == "" || smtpUser == "" || smtpPass == "" {
-		// SMTP not configured — log the link so you can test locally
-		fmt.Println("[WARN] SMTP not configured. Reset link:")
-		fmt.Printf("       %s\n", resetLink)
+		fmt.Println("[WARN] SMTP not configured. OTP:")
+		fmt.Printf("       %s\n", otp)
 		return
 	}
 	if smtpPort == "" {
@@ -255,8 +271,8 @@ func sendResetEmail(toEmail, firstName, resetLink string) {
 		fromName = "AfCFTApreneurship Arena"
 	}
 
-	subject := "Reset Your Password — " + fromName
-	htmlBody := buildResetEmailHTML(firstName, resetLink, fromName)
+	subject := "Your Password Reset Code — " + fromName
+	htmlBody := buildOTPEmailHTML(firstName, otp, fromName)
 
 	msg := []byte(
 		"From: " + fromName + " <" + smtpUser + ">\r\n" +
@@ -270,20 +286,39 @@ func sendResetEmail(toEmail, firstName, resetLink string) {
 
 	auth := smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
 	if err := smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpUser, []string{toEmail}, msg); err != nil {
-		fmt.Printf("[ERROR] Failed to send reset email to %s: %v\n", toEmail, err)
+		fmt.Printf("[ERROR] Failed to send OTP email to %s: %v\n", toEmail, err)
 	} else {
-		fmt.Printf("[INFO] Reset email sent to %s\n", toEmail)
+		fmt.Printf("[INFO] OTP email sent to %s\n", toEmail)
 	}
 }
 
-// ─── buildResetEmailHTML ──────────────────────────────────────────────────────
-func buildResetEmailHTML(firstName, resetLink, appName string) string {
+// ─── buildOTPEmailHTML ────────────────────────────────────────────────────────
+func buildOTPEmailHTML(firstName, otp, appName string) string {
+	// Split OTP into individual digits for the styled boxes
+	digits := strings.Split(otp, "")
+	var digitBoxes string
+	for _, d := range digits {
+		digitBoxes += fmt.Sprintf(`
+		  <td style="padding:0 4px;">
+		    <div style="
+		      width:44px;height:54px;
+		      border:2px solid #d1fae5;
+		      border-radius:10px;
+		      background:#f0fdf4;
+		      display:flex;align-items:center;justify-content:center;
+		      font-size:28px;font-weight:700;color:#047857;
+		      font-family:'Segoe UI',Arial,sans-serif;
+		      line-height:54px;text-align:center;
+		    ">%s</div>
+		  </td>`, d)
+	}
+
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Reset Your Password</title>
+  <title>Your Reset Code</title>
 </head>
 <body style="margin:0;padding:0;background:#f0fdf4;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%%" cellpadding="0" cellspacing="0" style="background:#f0fdf4;padding:40px 20px;">
@@ -295,7 +330,7 @@ func buildResetEmailHTML(firstName, resetLink, appName string) string {
         <tr>
           <td style="background:linear-gradient(135deg,#047857,#10b981);padding:32px 40px;text-align:center;">
             <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">%s</h1>
-            <p style="margin:6px 0 0;color:rgba(255,255,255,0.75);font-size:13px;">Password Reset Request</p>
+            <p style="margin:6px 0 0;color:rgba(255,255,255,0.75);font-size:13px;">Password Reset Code</p>
           </td>
         </tr>
 
@@ -303,29 +338,20 @@ func buildResetEmailHTML(firstName, resetLink, appName string) string {
         <tr>
           <td style="padding:36px 40px;">
             <p style="margin:0 0 10px;font-size:16px;font-weight:600;color:#0f172a;">Hi %s,</p>
-            <p style="margin:0 0 24px;font-size:14px;color:#475569;line-height:1.7;">
-              We received a request to reset your password.<br/>
-              Click the button below to set a new password.
-              This link expires in <strong>1 hour</strong>.
+            <p style="margin:0 0 28px;font-size:14px;color:#475569;line-height:1.7;">
+              Use the 6-digit code below to reset your password.
+              This code expires in <strong>10 minutes</strong> and can only be used once.
             </p>
 
-            <!-- CTA -->
+            <!-- OTP digits -->
             <table cellpadding="0" cellspacing="0" style="margin:0 auto 28px;">
-              <tr>
-                <td style="background:#047857;border-radius:10px;">
-                  <a href="%s"
-                     style="display:inline-block;padding:14px 32px;color:#fff;font-size:14px;font-weight:700;text-decoration:none;border-radius:10px;">
-                    Reset My Password &rarr;
-                  </a>
-                </td>
-              </tr>
+              <tr>%s</tr>
             </table>
 
-            <!-- Fallback URL -->
-            <p style="margin:0 0 6px;font-size:12px;color:#94a3b8;text-align:center;">
-              If the button doesn't work, paste this link into your browser:
+            <!-- Plain-text fallback -->
+            <p style="margin:0 0 28px;font-size:12px;color:#94a3b8;text-align:center;">
+              Your code: <strong style="color:#047857;letter-spacing:4px;">%s</strong>
             </p>
-            <p style="margin:0 0 28px;font-size:11px;color:#047857;word-break:break-all;text-align:center;">%s</p>
 
             <!-- Warning -->
             <table width="100%%" cellpadding="0" cellspacing="0">
@@ -333,7 +359,7 @@ func buildResetEmailHTML(firstName, resetLink, appName string) string {
                 <td style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;">
                   <p style="margin:0;font-size:12.5px;color:#92400e;line-height:1.6;">
                     ⚠ <strong>Didn't request this?</strong> You can safely ignore this email —
-                    your password will not change.
+                    your password will not change. Never share this code with anyone.
                   </p>
                 </td>
               </tr>
@@ -355,5 +381,5 @@ func buildResetEmailHTML(firstName, resetLink, appName string) string {
     </td></tr>
   </table>
 </body>
-</html>`, appName, firstName, resetLink, resetLink, time.Now().Year(), appName)
+</html>`, appName, firstName, digitBoxes, otp, time.Now().Year(), appName)
 }
