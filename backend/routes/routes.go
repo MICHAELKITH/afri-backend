@@ -8,19 +8,19 @@ import (
 )
 
 func SetupRoutes(app *fiber.App) {
-	// Base group for all API calls
 	api := app.Group("/api")
 
 	// ── 1. PUBLIC ROUTES ──────────────────────────────────────────────────────
-	api.Post("/signup",         controllers.SignUp)
-	api.Post("/login",          controllers.Login)
-	api.Post("/forgot-password", controllers.ForgotPassword) 
-	api.Post("/reset-password",  controllers.ResetPassword)  
+	api.Post("/signup",          controllers.SignUp)
+	api.Post("/login",           controllers.Login)
+	api.Post("/forgot-password", controllers.ForgotPassword)
+	api.Post("/reset-password",  controllers.ResetPassword)
 
 	// ── 2. PROTECTED ROUTES ───────────────────────────────────────────────────
 	auth := api.Group("/auth")
 	auth.Use(middleware.RequireAuth)
 
-	auth.Get("/user",   controllers.GetUser)
-	auth.Post("/logout", controllers.Logout)
+	auth.Get("/users",        controllers.GetUsers)
+	auth.Get("/users/count", controllers.GetUserCount)
+	auth.Post("/logout",     controllers.Logout)
 }
