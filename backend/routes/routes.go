@@ -16,6 +16,7 @@ func SetupRoutes(app *fiber.App) {
 	api.Post("/login/trader",    controllers.LoginTrader)
 	api.Post("/forgot-password", controllers.ForgotPassword)
 	api.Post("/reset-password",  controllers.ResetPassword)
+	api.Post("/check-email",     controllers.CheckEmail)
 
 	// ── Authenticated (any role) ──────────────────────────────────────────────
 	auth := api.Group("/auth", middleware.RequireAuth)

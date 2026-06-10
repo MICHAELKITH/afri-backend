@@ -86,12 +86,26 @@ func SignUp(c *fiber.Ctx) error {
 		createData["phone_number"] = pn
 	}
 
-	if err := database.DB.Model(&models.User{}).Create(createData).Error; err != nil {
-		if strings.Contains(err.Error(), "23505") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
-			return c.Status(400).JSON(fiber.Map{"error": "This email or phone is already registered"})
-		}
-		return c.Status(400).JSON(fiber.Map{"error": "Registration failed: invalid data provided"})
-	}
+if err := database.DB.Model(&models.User{}).Create(createData).Error; err != nil {
+    if strings.Contains(err.Error(), "23505") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+        // Determine which field caused the conflict
+        field := "unknown"
+        errStr := err.Error()
+        switch {
+        case strings.Contains(errStr, "idx_users_email") || strings.Contains(errStr, "uni_users_email"):
+            field = "email"
+        case strings.Contains(errStr, "idx_users_phone_number") || strings.Contains(errStr, "uni_users_phone_number"):
+            field = "phone_number"
+        }
+
+        return c.Status(400).JSON(fiber.Map{
+            "error":   "Duplicate value",
+            "field":   field,
+            "message": "This " + field + " is already registered",
+        })
+    }
+    return c.Status(400).JSON(fiber.Map{"error": "Registration failed: invalid data provided"})
+}
 
 	if err := database.DB.Where("email = ?", req.Email).First(&req).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch created user"})
@@ -107,6 +121,35 @@ func SignUp(c *fiber.Ctx) error {
 		"token":   signed,
 		"user":    req.Safe(),
 	})
+}
+
+func CheckEmail(c *fiber.Ctx) error {
+    var body struct {
+        Email string `json:"email"`
+    }
+    if err := c.BodyParser(&body); err != nil {
+        return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
+    }
+
+    body.Email = strings.TrimSpace(strings.ToLower(body.Email))
+    if body.Email == "" {
+        return c.Status(400).JSON(fiber.Map{"error": "Email is required"})
+    }
+
+    var user models.User
+    if err := database.DB.Where("email = ?", body.Email).First(&user).Error; err == nil {
+        // Email exists
+        return c.Status(409).JSON(fiber.Map{
+            "error": "Email already registered",
+            "field": "email",
+        })
+    }
+
+    // Email available
+    return c.Status(200).JSON(fiber.Map{
+        "message": "Email available",
+        "field":   "email",
+    })
 }
 
 // ─── Login (generic — kept for backwards compatibility) ───────────────────────
