@@ -16,23 +16,35 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 func getJWTSecret() []byte {
 	return []byte(os.Getenv("JWT_SECRET"))
 }
 
-// generateOTP returns a cryptographically secure 6-digit OTP string.
 func generateOTP() (string, error) {
 	max := big.NewInt(1_000_000)
 	n, err := rand.Int(rand.Reader, max)
 	if err != nil {
 		return "", err
 	}
-	// Zero-pad to always be 6 digits
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
+// issueToken creates a signed JWT for the given user (includes role).
+func issueToken(user models.User) (string, error) {
+	claims := jwt.MapClaims{
+		"sub":  user.ID,
+		"role": user.Role,
+		"exp":  time.Now().Add(24 * time.Hour).Unix(),
+		"iat":  time.Now().Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(getJWTSecret())
+}
+
 // ─── SignUp ───────────────────────────────────────────────────────────────────
+
 func SignUp(c *fiber.Ctx) error {
 	var req models.User
 
@@ -43,6 +55,12 @@ func SignUp(c *fiber.Ctx) error {
 	req.Email = strings.TrimSpace(req.Email)
 	if req.Email == "" || req.Password == "" || req.FirstName == "" || req.LastName == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "Please fill in all required fields"})
+	}
+
+	// Validate role — only allow known roles
+	req.Role = strings.TrimSpace(strings.ToLower(req.Role))
+	if req.Role != "student" && req.Role != "trader" {
+		req.Role = "student" // default
 	}
 
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -61,6 +79,7 @@ func SignUp(c *fiber.Ctx) error {
 		"year_of_study":  req.YearOfStudy,
 		"learning_goals": req.LearningGoals,
 		"password":       req.Password,
+		"role":           req.Role,
 	}
 
 	if pn := strings.TrimSpace(req.PhoneNumber); pn != "" {
@@ -78,13 +97,7 @@ func SignUp(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch created user"})
 	}
 
-	claims := jwt.MapClaims{
-		"sub": req.ID,
-		"exp": time.Now().Add(24 * time.Hour).Unix(),
-		"iat": time.Now().Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(getJWTSecret())
+	signed, err := issueToken(req)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Internal server error: token generation failed"})
 	}
@@ -96,7 +109,8 @@ func SignUp(c *fiber.Ctx) error {
 	})
 }
 
-// ─── Login ────────────────────────────────────────────────────────────────────
+// ─── Login (generic — kept for backwards compatibility) ───────────────────────
+
 func Login(c *fiber.Ctx) error {
 	var body struct {
 		Email    string `json:"email"`
@@ -116,33 +130,68 @@ func Login(c *fiber.Ctx) error {
 		return c.Status(401).JSON(fiber.Map{"error": "Invalid email or password"})
 	}
 
-	claims := jwt.MapClaims{
-		"sub": user.ID,
-		"exp": time.Now().Add(24 * time.Hour).Unix(),
-		"iat": time.Now().Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(getJWTSecret())
+	signed, err := issueToken(user)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Login failed: could not issue token"})
 	}
 
-	return c.JSON(fiber.Map{
-		"token": signed,
-		"user":  user.Safe(),
-	})
+	return c.JSON(fiber.Map{"token": signed, "user": user.Safe()})
+}
+
+// ─── Role-specific Login ──────────────────────────────────────────────────────
+
+func LoginStudent(c *fiber.Ctx) error {
+	return loginByRole(c, "student")
+}
+
+func LoginTrader(c *fiber.Ctx) error {
+	return loginByRole(c, "trader")
+}
+
+func loginByRole(c *fiber.Ctx, role string) error {
+	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request format"})
+	}
+
+	body.Email = strings.TrimSpace(strings.ToLower(body.Email))
+	if body.Email == "" || body.Password == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Email and password are required"})
+	}
+
+	var user models.User
+	if err := database.DB.
+		Where("email = ? AND role = ?", body.Email, role).
+		First(&user).Error; err != nil {
+		// Deliberately vague — don't reveal whether email exists or role is wrong
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid credentials or wrong account type"})
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(body.Password)); err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid credentials or wrong account type"})
+	}
+
+	signed, err := issueToken(user)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Login failed: could not issue token"})
+	}
+
+	return c.JSON(fiber.Map{"token": signed, "user": user.Safe()})
 }
 
 // ─── Logout ───────────────────────────────────────────────────────────────────
+
 func Logout(c *fiber.Ctx) error {
 	c.ClearCookie("afridauth")
 	return c.JSON(fiber.Map{"message": "Successfully logged out"})
 }
 
 // ─── ForgotPassword ───────────────────────────────────────────────────────────
-// POST /api/forgot-password
-// Generates a 6-digit OTP, stores it hashed, and emails it to the user.
-// Always returns 200 to prevent email enumeration.
+
 func ForgotPassword(c *fiber.Ctx) error {
 	var body struct {
 		Email string `json:"email"`
@@ -157,7 +206,6 @@ func ForgotPassword(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Email is required"})
 	}
 
-	// Always return the same message — prevents email enumeration
 	genericMsg := fiber.Map{"message": "If that email is registered, you will receive a reset code shortly."}
 
 	var user models.User
@@ -165,13 +213,11 @@ func ForgotPassword(c *fiber.Ctx) error {
 		return c.Status(200).JSON(genericMsg)
 	}
 
-	// Generate 6-digit OTP
 	otp, err := generateOTP()
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate OTP"})
 	}
 
-	// Hash the OTP before storing (treat it like a password)
 	hashedOTP, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to secure OTP"})
@@ -186,16 +232,13 @@ func ForgotPassword(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to save OTP"})
 	}
 
-	// Send OTP email asynchronously
 	go sendOTPEmail(user.Email, user.FirstName, otp)
 
 	return c.Status(200).JSON(genericMsg)
 }
 
 // ─── ResetPassword ────────────────────────────────────────────────────────────
-// POST /api/reset-password
-// Body: { "email": "...", "otp": "123456", "password": "newpass" }
-// Validates the OTP and updates the password.
+
 func ResetPassword(c *fiber.Ctx) error {
 	var body struct {
 		Email    string `json:"email"`
@@ -208,7 +251,7 @@ func ResetPassword(c *fiber.Ctx) error {
 	}
 
 	body.Email = strings.TrimSpace(strings.ToLower(body.Email))
-	body.OTP   = strings.TrimSpace(body.OTP)
+	body.OTP = strings.TrimSpace(body.OTP)
 
 	if body.Email == "" || body.OTP == "" || body.Password == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "Email, OTP, and new password are required"})
@@ -218,7 +261,6 @@ func ResetPassword(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Password must be at least 8 characters"})
 	}
 
-	// Find user with a non-expired OTP token
 	var user models.User
 	if err := database.DB.Where(
 		"email = ? AND password_reset_expires > ?",
@@ -228,18 +270,15 @@ func ResetPassword(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "OTP is invalid or has expired"})
 	}
 
-	// Verify OTP against the stored hash
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordResetToken), []byte(body.OTP)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Incorrect OTP. Please check your email and try again."})
 	}
 
-	// Hash the new password
 	hashed, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to secure password"})
 	}
 
-	// Update password and clear the OTP so it cannot be reused
 	if err := database.DB.Model(&user).Updates(map[string]interface{}{
 		"password":               string(hashed),
 		"password_reset_token":   "",
@@ -252,6 +291,7 @@ func ResetPassword(c *fiber.Ctx) error {
 }
 
 // ─── sendOTPEmail ─────────────────────────────────────────────────────────────
+
 func sendOTPEmail(toEmail, firstName, otp string) {
 	smtpHost := os.Getenv("SMTP_HOST")
 	smtpPort := os.Getenv("SMTP_PORT")
@@ -293,8 +333,8 @@ func sendOTPEmail(toEmail, firstName, otp string) {
 }
 
 // ─── buildOTPEmailHTML ────────────────────────────────────────────────────────
+
 func buildOTPEmailHTML(firstName, otp, appName string) string {
-	// Split OTP into individual digits for the styled boxes
 	digits := strings.Split(otp, "")
 	var digitBoxes string
 	for _, d := range digits {
@@ -325,16 +365,12 @@ func buildOTPEmailHTML(firstName, otp, appName string) string {
     <tr><td align="center">
       <table width="520" cellpadding="0" cellspacing="0"
         style="background:#fff;border-radius:16px;border:1px solid #d1fae5;overflow:hidden;max-width:100%%;">
-
-        <!-- Header -->
         <tr>
           <td style="background:linear-gradient(135deg,#047857,#10b981);padding:32px 40px;text-align:center;">
             <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">%s</h1>
             <p style="margin:6px 0 0;color:rgba(255,255,255,0.75);font-size:13px;">Password Reset Code</p>
           </td>
         </tr>
-
-        <!-- Body -->
         <tr>
           <td style="padding:36px 40px;">
             <p style="margin:0 0 10px;font-size:16px;font-weight:600;color:#0f172a;">Hi %s,</p>
@@ -342,18 +378,12 @@ func buildOTPEmailHTML(firstName, otp, appName string) string {
               Use the 6-digit code below to reset your password.
               This code expires in <strong>10 minutes</strong> and can only be used once.
             </p>
-
-            <!-- OTP digits -->
             <table cellpadding="0" cellspacing="0" style="margin:0 auto 28px;">
               <tr>%s</tr>
             </table>
-
-            <!-- Plain-text fallback -->
             <p style="margin:0 0 28px;font-size:12px;color:#94a3b8;text-align:center;">
               Your code: <strong style="color:#047857;letter-spacing:4px;">%s</strong>
             </p>
-
-            <!-- Warning -->
             <table width="100%%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;">
@@ -366,8 +396,6 @@ func buildOTPEmailHTML(firstName, otp, appName string) string {
             </table>
           </td>
         </tr>
-
-        <!-- Footer -->
         <tr>
           <td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:20px 40px;text-align:center;">
             <p style="margin:0;font-size:11.5px;color:#94a3b8;">
@@ -376,7 +404,6 @@ func buildOTPEmailHTML(firstName, otp, appName string) string {
             </p>
           </td>
         </tr>
-
       </table>
     </td></tr>
   </table>

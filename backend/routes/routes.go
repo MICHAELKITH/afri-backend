@@ -10,17 +10,29 @@ import (
 func SetupRoutes(app *fiber.App) {
 	api := app.Group("/api")
 
-	// ── 1. PUBLIC ROUTES ──────────────────────────────────────────────────────
+	// ── Public ────────────────────────────────────────────────────────────────
 	api.Post("/signup",          controllers.SignUp)
-	api.Post("/login",           controllers.Login)
+	api.Post("/login/student",   controllers.LoginStudent)
+	api.Post("/login/trader",    controllers.LoginTrader)
 	api.Post("/forgot-password", controllers.ForgotPassword)
 	api.Post("/reset-password",  controllers.ResetPassword)
 
-	// ── 2. PROTECTED ROUTES ───────────────────────────────────────────────────
-	auth := api.Group("/auth")
-	auth.Use(middleware.RequireAuth)
+	// ── Authenticated (any role) ──────────────────────────────────────────────
+	auth := api.Group("/auth", middleware.RequireAuth)
+	auth.Post("/logout", controllers.Logout)
 
-	auth.Get("/users",        controllers.GetUsers)
-	auth.Get("/users/count", controllers.GetUserCount)
-	auth.Post("/logout",     controllers.Logout)
+	// ── Student only ──────────────────────────────────────────────────────────
+	student := api.Group("/student", middleware.RequireAuth, middleware.RequireRole("student"))
+	student.Get("/dashboard", controllers.GetStudentDashboard)
+	student.Get("/stats",     controllers.GetStudentStats)
+
+	// ── Trader only ───────────────────────────────────────────────────────────
+	trader := api.Group("/trader", middleware.RequireAuth, middleware.RequireRole("trader"))
+	trader.Get("/dashboard", controllers.GetTraderDashboard)
+	trader.Get("/stats",     controllers.GetTraderStats)
+
+	// ── Admin only ────────────────────────────────────────────────────────────
+	admin := api.Group("/admin", middleware.RequireAuth, middleware.RequireRole("admin"))
+	admin.Get("/users",       controllers.GetUsers)
+	admin.Get("/users/count", controllers.GetUserCount)
 }
