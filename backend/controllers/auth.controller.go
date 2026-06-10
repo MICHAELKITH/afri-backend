@@ -191,6 +191,8 @@ func LoginTrader(c *fiber.Ctx) error {
 	return loginByRole(c, "trader")
 }
 
+// ─── Role-specific Login ──────────────────────────────────────────────────────
+
 func loginByRole(c *fiber.Ctx, role string) error {
 	var body struct {
 		Email    string `json:"email"`
@@ -206,16 +208,24 @@ func loginByRole(c *fiber.Ctx, role string) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Email and password are required"})
 	}
 
+	// Step 1: find by email only — no role filter
 	var user models.User
-	if err := database.DB.
-		Where("email = ? AND role = ?", body.Email, role).
-		First(&user).Error; err != nil {
-		// Deliberately vague — don't reveal whether email exists or role is wrong
-		return c.Status(401).JSON(fiber.Map{"error": "Invalid credentials or wrong account type"})
+	if err := database.DB.Where("email = ?", body.Email).First(&user).Error; err != nil {
+		// Email doesn't exist — give a vague message
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid email or password"})
 	}
 
+	// Step 2: verify password before revealing anything about the account
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(body.Password)); err != nil {
-		return c.Status(401).JSON(fiber.Map{"error": "Invalid credentials or wrong account type"})
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid email or password"})
+	}
+
+	// Step 3: password is confirmed — now safe to check role
+	if user.Role != role {
+		return c.Status(403).JSON(fiber.Map{
+			"error": fmt.Sprintf("This account is registered as a %s. Please use the %s login.", user.Role, user.Role),
+			"role":  user.Role,
+		})
 	}
 
 	signed, err := issueToken(user)
