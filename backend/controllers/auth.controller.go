@@ -31,7 +31,6 @@ func generateOTP() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
-// issueToken creates a signed JWT for the given user (includes role).
 func issueToken(user models.User) (string, error) {
 	claims := jwt.MapClaims{
 		"sub":  user.ID,
@@ -41,6 +40,21 @@ func issueToken(user models.User) (string, error) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(getJWTSecret())
+}
+
+// ─── resolveFromAddress ───────────────────────────────────────────────────────
+// Resend requires sending FROM onboarding@resend.dev on free tier (no custom domain).
+// For Gmail SMTP, use the SMTP_USER address.
+func resolveFromAddress() string {
+	host := os.Getenv("SMTP_HOST")
+	if strings.Contains(host, "resend.com") {
+		from := os.Getenv("SMTP_FROM_ADDRESS")
+		if from == "" {
+			from = "onboarding@resend.dev"
+		}
+		return from
+	}
+	return os.Getenv("SMTP_USER")
 }
 
 // ─── SignUp ───────────────────────────────────────────────────────────────────
@@ -57,10 +71,9 @@ func SignUp(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Please fill in all required fields"})
 	}
 
-	// Validate role — only allow known roles
 	req.Role = strings.TrimSpace(strings.ToLower(req.Role))
 	if req.Role != "student" && req.Role != "trader" {
-		req.Role = "student" // default
+		req.Role = "student"
 	}
 
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -106,12 +119,10 @@ func SignUp(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Registration failed: invalid data provided"})
 	}
 
-	// Fetch the newly created user so we have their ID
 	if err := database.DB.Where("email = ?", req.Email).First(&req).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch created user"})
 	}
 
-	// Generate & store email verification OTP
 	otp, err := generateOTP()
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate verification code"})
@@ -131,7 +142,6 @@ func SignUp(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to save verification code"})
 	}
 
-	// Send verification email in background
 	go sendVerifyEmail(req.Email, req.FirstName, otp)
 
 	return c.Status(201).JSON(fiber.Map{
@@ -197,7 +207,6 @@ func VerifyEmail(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Code is invalid or has expired"})
 	}
 
-	// Already verified — let them through
 	if user.EmailVerified {
 		signed, _ := issueToken(user)
 		return c.Status(200).JSON(fiber.Map{
@@ -219,7 +228,6 @@ func VerifyEmail(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to verify email"})
 	}
 
-	// Issue JWT so frontend can auto-login after verification
 	signed, err := issueToken(user)
 	if err != nil {
 		return c.Status(200).JSON(fiber.Map{
@@ -251,7 +259,6 @@ func ResendVerifyOTP(c *fiber.Ctx) error {
 
 	var user models.User
 	if err := database.DB.Where("email = ?", body.Email).First(&user).Error; err != nil {
-		// Generic — don't reveal whether email exists
 		return c.Status(200).JSON(fiber.Map{"message": "If that email is registered, a new code has been sent."})
 	}
 
@@ -283,7 +290,7 @@ func ResendVerifyOTP(c *fiber.Ctx) error {
 	return c.Status(200).JSON(fiber.Map{"message": "New verification code sent."})
 }
 
-// ─── Login (generic — kept for backwards compatibility) ───────────────────────
+// ─── Login ────────────────────────────────────────────────────────────────────
 
 func Login(c *fiber.Ctx) error {
 	var body struct {
@@ -322,13 +329,8 @@ func Login(c *fiber.Ctx) error {
 
 // ─── Role-specific Login ──────────────────────────────────────────────────────
 
-func LoginStudent(c *fiber.Ctx) error {
-	return loginByRole(c, "student")
-}
-
-func LoginTrader(c *fiber.Ctx) error {
-	return loginByRole(c, "trader")
-}
+func LoginStudent(c *fiber.Ctx) error { return loginByRole(c, "student") }
+func LoginTrader(c *fiber.Ctx) error  { return loginByRole(c, "trader") }
 
 func loginByRole(c *fiber.Ctx, role string) error {
 	var body struct {
@@ -345,18 +347,15 @@ func loginByRole(c *fiber.Ctx, role string) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Email and password are required"})
 	}
 
-	// Step 1: find by email only
 	var user models.User
 	if err := database.DB.Where("email = ?", body.Email).First(&user).Error; err != nil {
 		return c.Status(401).JSON(fiber.Map{"error": "Invalid email or password"})
 	}
 
-	// Step 2: verify password before revealing anything about the account
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(body.Password)); err != nil {
 		return c.Status(401).JSON(fiber.Map{"error": "Invalid email or password"})
 	}
 
-	// Step 3: block unverified users — password is confirmed so safe to say why
 	if !user.EmailVerified {
 		return c.Status(403).JSON(fiber.Map{
 			"error":      "Please verify your email before logging in.",
@@ -365,7 +364,6 @@ func loginByRole(c *fiber.Ctx, role string) error {
 		})
 	}
 
-	// Step 4: check role
 	if user.Role != role {
 		return c.Status(403).JSON(fiber.Map{
 			"error": fmt.Sprintf("This account is registered as a %s. Please use the %s login.", user.Role, user.Role),
@@ -508,11 +506,13 @@ func sendVerifyEmail(toEmail, firstName, otp string) {
 		fromName = "AfCFTApreneurship Arena"
 	}
 
+	fromAddr := resolveFromAddress() // ← Resend: onboarding@resend.dev | Gmail: SMTP_USER
+
 	subject := "Verify your email — " + fromName
 	htmlBody := buildVerifyEmailHTML(firstName, otp, fromName)
 
 	msg := []byte(
-		"From: " + fromName + " <" + smtpUser + ">\r\n" +
+		"From: " + fromName + " <" + fromAddr + ">\r\n" +
 			"To: " + toEmail + "\r\n" +
 			"Subject: " + subject + "\r\n" +
 			"MIME-Version: 1.0\r\n" +
@@ -522,7 +522,7 @@ func sendVerifyEmail(toEmail, firstName, otp string) {
 	)
 
 	auth := smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
-	if err := smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpUser, []string{toEmail}, msg); err != nil {
+	if err := smtp.SendMail(smtpHost+":"+smtpPort, auth, fromAddr, []string{toEmail}, msg); err != nil {
 		fmt.Printf("[ERROR] Failed to send verify email to %s: %v\n", toEmail, err)
 	} else {
 		fmt.Printf("[INFO] Verify email sent to %s\n", toEmail)
@@ -539,8 +539,7 @@ func sendOTPEmail(toEmail, firstName, otp string) {
 	fromName := os.Getenv("SMTP_FROM_NAME")
 
 	if smtpHost == "" || smtpUser == "" || smtpPass == "" {
-		fmt.Println("[WARN] SMTP not configured. OTP:")
-		fmt.Printf("       %s\n", otp)
+		fmt.Println("[WARN] SMTP not configured. OTP:", otp)
 		return
 	}
 	if smtpPort == "" {
@@ -550,11 +549,13 @@ func sendOTPEmail(toEmail, firstName, otp string) {
 		fromName = "AfCFTApreneurship Arena"
 	}
 
+	fromAddr := resolveFromAddress() // ← Resend: onboarding@resend.dev | Gmail: SMTP_USER
+
 	subject := "Your Password Reset Code — " + fromName
 	htmlBody := buildOTPEmailHTML(firstName, otp, fromName)
 
 	msg := []byte(
-		"From: " + fromName + " <" + smtpUser + ">\r\n" +
+		"From: " + fromName + " <" + fromAddr + ">\r\n" +
 			"To: " + toEmail + "\r\n" +
 			"Subject: " + subject + "\r\n" +
 			"MIME-Version: 1.0\r\n" +
@@ -564,7 +565,7 @@ func sendOTPEmail(toEmail, firstName, otp string) {
 	)
 
 	auth := smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
-	if err := smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpUser, []string{toEmail}, msg); err != nil {
+	if err := smtp.SendMail(smtpHost+":"+smtpPort, auth, fromAddr, []string{toEmail}, msg); err != nil {
 		fmt.Printf("[ERROR] Failed to send OTP email to %s: %v\n", toEmail, err)
 	} else {
 		fmt.Printf("[INFO] OTP email sent to %s\n", toEmail)
