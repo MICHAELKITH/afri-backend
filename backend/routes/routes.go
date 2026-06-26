@@ -20,9 +20,15 @@ func SetupRoutes(app *fiber.App) {
 	api.Post("/verify-email",      controllers.VerifyEmail)
 	api.Post("/resend-verify-otp", controllers.ResendVerifyOTP)
 
+	// Aggregate counts — no auth, safe for stat cards
+	api.Get("/stats", controllers.GetPublicStats)
+
 	// ── Authenticated (any role) ──────────────────────────────────────────────
 	auth := api.Group("/auth", middleware.RequireAuth)
 	auth.Post("/logout", controllers.Logout)
+
+	// Leaderboard — auth required, no emails exposed
+	auth.Get("/leaderboard", controllers.GetPublicLeaderboard)
 
 	// ── Student only ──────────────────────────────────────────────────────────
 	student := api.Group("/student", middleware.RequireAuth, middleware.RequireRole("student"))
@@ -36,6 +42,6 @@ func SetupRoutes(app *fiber.App) {
 
 	// ── Admin only ────────────────────────────────────────────────────────────
 	admin := api.Group("/admin", middleware.RequireAuth, middleware.RequireRole("admin"))
-	admin.Get("/users",       controllers.GetUsers)
+	admin.Get("/users",       controllers.GetUsers)      // full list with emails
 	admin.Get("/users/count", controllers.GetUserCount)
 }
