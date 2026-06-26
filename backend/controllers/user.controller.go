@@ -41,17 +41,22 @@ func GetUserCount(c *fiber.Ctx) error {
 
 // GetPublicStats — no auth required, safe aggregate counts for the dashboard.
 func GetPublicStats(c *fiber.Ctx) error {
-	var result struct {
-		UserCount    int64 `json:"user_count"`
-		TraderCount  int64 `json:"trader_count"`
-		StudentCount int64 `json:"student_count"`
-		CountryCount int64 `json:"country_count"`
-	}
-	database.DB.Raw(`SELECT COUNT(*) AS user_count FROM users WHERE deleted_at IS NULL`).Scan(&result)
-	database.DB.Raw(`SELECT COUNT(*) AS trader_count FROM users WHERE role = 'trader' AND deleted_at IS NULL`).Scan(&result)
-	database.DB.Raw(`SELECT COUNT(*) AS student_count FROM users WHERE role = 'student' AND deleted_at IS NULL`).Scan(&result)
-	database.DB.Raw(`SELECT COUNT(DISTINCT country) AS country_count FROM users WHERE country != '' AND deleted_at IS NULL`).Scan(&result)
-	return c.JSON(result)
+	var userCount    int64
+	var traderCount  int64
+	var studentCount int64
+	var countryCount int64
+
+	database.DB.Raw(`SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`).Scan(&userCount)
+	database.DB.Raw(`SELECT COUNT(*) FROM users WHERE role = 'trader' AND deleted_at IS NULL`).Scan(&traderCount)
+	database.DB.Raw(`SELECT COUNT(*) FROM users WHERE role = 'student' AND deleted_at IS NULL`).Scan(&studentCount)
+	database.DB.Raw(`SELECT COUNT(DISTINCT country) FROM users WHERE country != '' AND deleted_at IS NULL`).Scan(&countryCount)
+
+	return c.JSON(fiber.Map{
+		"user_count":    userCount,
+		"trader_count":  traderCount,
+		"student_count": studentCount,
+		"country_count": countryCount,
+	})
 }
 
 // GetPublicLeaderboard — auth required (any role), but no email exposed.
