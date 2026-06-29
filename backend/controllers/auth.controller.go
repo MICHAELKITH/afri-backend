@@ -59,10 +59,10 @@ func sendVerifyEmail(toEmail, firstName, otp string) {
 
 	client := resend.NewClient(apiKey)
 	params := &resend.SendEmailRequest{
-    From:    "AfCFTAPreneurship Arena <noreply@traders.kazini.africa>", // <-- Added the comma here!
+    From:    "AfCFTAPRENEURSHIP ARENA <noreply@traders.kazini.africa>", // <-- Added the comma here!
     To:      []string{toEmail},
-    Subject: "Verify your email – AfCFTAPreneurship Arena",
-    Html:    buildVerifyEmailHTML(firstName, otp, "AfCFTAPreneurship Arena"),
+    Subject: "Verify your email – AfCFTAPRENEURSHIP ARENA",
+    Html:    buildVerifyEmailHTML(firstName, otp, "AfCFTAPRENEURSHIP ARENA"),
 }
 
 	sent, err := client.Emails.Send(params)
