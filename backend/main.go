@@ -36,12 +36,12 @@ func main() {
 	app := fiber.New()
 
 	// 5. CORS Configuration
-	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "http://localhost:5173, https://traders.kazini.africa, https://afri-backend-production.up.railway.app",
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
-		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
-		AllowCredentials: true,
-	}))
+app.Use(cors.New(cors.Config{
+    AllowOrigins:     "http://localhost:5173,https://traders.kazini.africa,https://afri-backend-production.up.railway.app",
+    AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+    AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
+    AllowCredentials: true,
+}))
 
 	// 6. Setup routes (Your user count logic route should be registered safely inside here)
 	log.Println("🛣️ Registering application routes...")
