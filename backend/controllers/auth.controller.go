@@ -17,6 +17,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const appDisplayName = "AfCFTAPRENEURSHIP ARENA"
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 func getJWTSecret() []byte {
@@ -26,6 +28,16 @@ func getJWTSecret() []byte {
 		return []byte("temporary_unsafe_secret_change_me")
 	}
 	return []byte(secret)
+}
+
+// getFromAddress returns the sender used for all outgoing emails.
+// Override with the EMAIL_FROM env var if needed. The domain must be
+// verified in Resend.
+func getFromAddress() string {
+	if from := os.Getenv("EMAIL_FROM"); from != "" {
+		return from
+	}
+	return appDisplayName + " <noreply@afcftapreneurship.kazini.africa>"
 }
 
 func generateOTP() (string, error) {
@@ -59,11 +71,11 @@ func sendVerifyEmail(toEmail, firstName, otp string) {
 
 	client := resend.NewClient(apiKey)
 	params := &resend.SendEmailRequest{
-    From:    "AfCFTAPRENEURSHIP ARENA <noreply@traders.kazini.africa>", // <-- Added the comma here!
-    To:      []string{toEmail},
-    Subject: "Verify your email – AfCFTAPRENEURSHIP ARENA",
-    Html:    buildVerifyEmailHTML(firstName, otp, "AfCFTAPRENEURSHIP ARENA"),
-}
+		From:    getFromAddress(),
+		To:      []string{toEmail},
+		Subject: "Verify your email – " + appDisplayName,
+		Html:    buildVerifyEmailHTML(firstName, otp, appDisplayName),
+	}
 
 	sent, err := client.Emails.Send(params)
 	if err != nil {
@@ -84,10 +96,10 @@ func sendOTPEmail(toEmail, firstName, otp string) {
 
 	client := resend.NewClient(apiKey)
 	params := &resend.SendEmailRequest{
-		From:    "AfCFTApreneurship Arena <onboarding@resend.dev>",
+		From:    getFromAddress(),
 		To:      []string{toEmail},
-		Subject: "Your Password Reset Code — AfCFTApreneurship Arena",
-		Html:    buildOTPEmailHTML(firstName, otp, "AfCFTApreneurship Arena"),
+		Subject: "Your Password Reset Code — " + appDisplayName,
+		Html:    buildOTPEmailHTML(firstName, otp, appDisplayName),
 	}
 
 	sent, err := client.Emails.Send(params)
